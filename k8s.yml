@@ -25,6 +25,7 @@ spec:
       labels:
         app: go-gracefull-shutdown
     spec:
+      terminationGracePeriodSeconds: 60
       containers:
       - name: go-gracefull-shutdown
         image: meziaris/go-gracefull-shutdown:latest
@@ -51,7 +52,6 @@ spec:
           preStop:
             exec:
               command: ["/bin/sh", "-c", "sleep 5"]
-        terminationGracePeriodSeconds: 60
         resources:
           requests:
             memory: "128Mi"
