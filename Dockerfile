@@ -11,4 +11,4 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o app .
 FROM gcr.io/distroless/static-debian11:debug-nonroot
 WORKDIR /app
 COPY --from=builder --chown=nonroot:nonroot /app/app ./app
-CMD ["./app"]
+ENTRYPOINT ["./app"]
