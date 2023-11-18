@@ -6,18 +6,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	internalMiddleware "github.com/meziaris/golang-gracefull-shutdown/middleware"
 )
+
+var STATUS atomic.Int32
+var KUBE_PERIOD_SECONDS = 2
+var KUBE_FAILURE_THRESHOLD = 2
+var DELTA_SECONDS = 2
+var WAIT_SECONDS = (KUBE_FAILURE_THRESHOLD*KUBE_PERIOD_SECONDS + DELTA_SECONDS)
 
 func main() {
 	r := chi.NewRouter()
-	r.Use(middleware.Heartbeat("/health"))
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello world!"))
+	r.Use(internalMiddleware.Heartbeat("/health", &STATUS))
+	r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("pong"))
 	})
 
 	srv := &http.Server{
@@ -25,41 +32,30 @@ func main() {
 		Handler: r,
 	}
 
-	idleConnsClosed := make(chan struct{})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	go func() {
-		sigint := make(chan os.Signal, 1)
-
-		// interrupt signal sent from terminal
-		signal.Notify(sigint, os.Interrupt)
-		signal.Notify(sigint, syscall.SIGINT)
-		// sigterm signal sent from kubernetes
-		signal.Notify(sigint, syscall.SIGTERM)
-
-		<-sigint
-
-		// We received an interrupt signal, shut down.
-		log.Println("received interrupt signal, gracefully shutting down...")
-
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		if err := srv.Shutdown(ctx); err != nil {
-			// Error from closing listeners, or context timeout:
-			log.Printf("HTTP server Shutdown: %v", err)
+		time.AfterFunc(1*time.Second, func() {
+			STATUS.Add(1)
+		})
+		log.Println("starting server on port 3333")
+		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+			// Error starting or closing listener:
+			log.Fatalf("listen and serve returned err: %v", err)
 		}
-
-		time.Sleep(time.Second * 3)
-		log.Println("server gracefully stopped")
-
-		close(idleConnsClosed)
 	}()
 
-	log.Println("starting server on port 3333")
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		// Error starting or closing listener:
-		log.Fatalf("HTTP server ListenAndServe: %v", err)
+	<-ctx.Done()
+	// We received an interrupt signal, shut down.
+	STATUS.Store(0) // Start to fail readiness probes
+	log.Printf("received interrupt signal, http server will shut down in %v seconds", WAIT_SECONDS)
+	time.Sleep(time.Duration(WAIT_SECONDS) * time.Second)
+
+	log.Println("gracefully shutting down...")
+	if err := srv.Shutdown(context.TODO()); err != nil {
+		log.Printf("server shutdown returned an err: %v\n", err)
 	}
 
-	<-idleConnsClosed
-	log.Println("service stops completely")
+	log.Println("server gracefully stopped")
 }
